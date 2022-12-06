@@ -6,6 +6,7 @@ import processes.lamport.MessageTypeLamport;
 import processes.socket.ServerHandlerCentralized;
 import processes.socket.ServerHandlerLamport;
 
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -13,6 +14,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.time.Instant;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.PriorityQueue;
 import java.util.concurrent.Semaphore;
@@ -26,24 +28,40 @@ public class Process extends Thread{
     int numberProcesses;
 
     int ownPort;
+    int ownCommunicationPort;
     int[] socketPorts;
+    int[] childPorts;
+
+    Socket[] childSockets;
+
+    Boolean[] childFlags;
 
     Socket clientSocket;
     ServerSocket serverScokets;
 
+    ServerSocket heavyWeightServerSocket;
+
     Semaphore semaphore = new Semaphore(1);
 
-    public Process(int numberProcesses, int processId, int[] socketPorts) {
+    CommunicationServerHandler communicationServerHandler;
+
+    public Process(int numberProcesses, int processId, int[] socketPorts, int[] childPorts, int[] communicationPorts) {
         this.pendingQueue = new ArrayDeque<Integer>();
         this.processId = processId;
         this.numberProcesses = numberProcesses;
         this.socketPorts = socketPorts;
+        this.childPorts = childPorts;
+        this.childSockets = new Socket[childPorts.length];
+        this.childFlags = new Boolean[childPorts.length];
+
+        Arrays.fill(childFlags, true);
 
         haveToken = processId == leader;
 
         for (int i = 0; i < numberProcesses; i++) {
             if (i == processId) {
                 this.ownPort = socketPorts[i];
+                this.ownCommunicationPort = communicationPorts[i];
                 try {
                     serverScokets = new ServerSocket(socketPorts[i], 5 + numberProcesses);
                 } catch (IOException e) {
@@ -51,6 +69,10 @@ public class Process extends Thread{
                 }
             }
         }
+
+        communicationServerHandler = new CommunicationServerHandler(this);
+        communicationServerHandler.start();
+
 
         ServerHandlerCentralized serverHandlerCentralized = new ServerHandlerCentralized(this, socketPorts, serverScokets);
         serverHandlerCentralized.start();
@@ -216,22 +238,59 @@ public class Process extends Thread{
         }
     }
 
+    public void notifyLightWeights() {
+        for (int i = 0; i < childSockets.length; i++) {
+            if (childSockets[i] != null) {
+                try {
+                    DataOutputStream dataOutputStream = new DataOutputStream(childSockets[i].getOutputStream());
+                    dataOutputStream.writeUTF(LightWeightHeavyWeightCommunication.GreenFlag.toString());
+                    childFlags[i] = false;
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+    }
+
+    public boolean waitLightWeights() {
+        for (int i = 0; i < childSockets.length; i++) {
+            if (childSockets[i] != null) {
+                try {
+                    DataInputStream dataInputStream = new DataInputStream(childSockets[i].getInputStream());
+                    String result = dataInputStream.readUTF();
+
+                    childFlags[i] = LightWeightHeavyWeightCommunication.valueOf(result) == LightWeightHeavyWeightCommunication.GreenFlag;
+
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+
+        return Arrays.stream(childFlags).allMatch(Boolean::valueOf);
+    }
+
     @Override
     public void run() {
 
         while(true){
-            //waitHeavyWeight();
             requestCS();
-            for (int i=0; i<10; i++){
-                System.out.println("I am the Process heavyweight: "+ processId + " printed times: " + (1 + i));
+
+            notifyLightWeights();
+
+            while (!waitLightWeights());
+
+            releaseCS();
+        }
+
+        /*for (int i = 0; i < childSockets.length; i++) {
+            if (childSockets[i] != null) {
                 try {
-                    sleep(1000);
-                } catch (InterruptedException ignored) {
+                    childSockets[i].close();
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
                 }
             }
-            releaseCS();
-
-            //notifyHeavyWeight();
-        }
+        }*/
     }
 }

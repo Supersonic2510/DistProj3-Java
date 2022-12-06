@@ -4,6 +4,7 @@ import processes.lamport.MessageLamport;
 import processes.lamport.MessageTypeLamport;
 import processes.socket.ServerHandlerLamport;
 
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.*;
@@ -18,6 +19,7 @@ public class ProcessAChild extends LightweightProcess {
     int numberProcesses;
 
     int ownPort;
+    int ownCommunicationPort;
     int[] socketPorts;
 
     Socket[] clientSockets;
@@ -25,13 +27,21 @@ public class ProcessAChild extends LightweightProcess {
 
     Instant ownInstant;
 
+    int parentPort;
+
+    Socket parentSocket;
+
+    boolean flag;
+
     Semaphore semaphore = new Semaphore(1);
 
-    public ProcessAChild(int numberProcesses, int processId, int[] socketPorts) {
+    public ProcessAChild(int numberProcesses, int processId, int[] socketPorts, int parentPort, int[] communicationPorts) {
         this.queue = new Instant[numberProcesses];
         this.processId = processId;
         this.numberProcesses = numberProcesses;
         this.socketPorts = socketPorts;
+        this.parentPort = parentPort;
+        this.flag = false;
 
         clientSockets = new Socket[numberProcesses];
 
@@ -40,12 +50,24 @@ public class ProcessAChild extends LightweightProcess {
 
             if (i == processId) {
                 this.ownPort = socketPorts[i];
+                this.ownCommunicationPort = communicationPorts[i];
                 try {
                     serverScokets = new ServerSocket(socketPorts[i], 5 + numberProcesses);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
             }
+        }
+
+        try {
+            parentSocket = new Socket(InetAddress.getLocalHost(), parentPort);
+            DataOutputStream dataOutputStream = new DataOutputStream(parentSocket.getOutputStream());
+
+            dataOutputStream.writeInt(processId);
+            dataOutputStream.writeInt(ownCommunicationPort);
+
+        }catch (IOException exception){
+            throw new RuntimeException();
         }
 
         ServerHandlerLamport serverHandlerLamport = new ServerHandlerLamport(this, socketPorts, serverScokets);
@@ -182,11 +204,33 @@ public class ProcessAChild extends LightweightProcess {
         }
     }
 
+    private void notifyHeavyWeight() {
+        try {
+            DataOutputStream dataOutputStream = new DataOutputStream(parentSocket.getOutputStream());
+            dataOutputStream.writeUTF(LightWeightHeavyWeightCommunication.GreenFlag.toString());
+            flag = false;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private boolean waitHeavyWeight() {
+        try {
+            DataInputStream dataInputStream = new DataInputStream(parentSocket.getInputStream());
+            String result = dataInputStream.readUTF();
+
+            flag = LightWeightHeavyWeightCommunication.valueOf(result) == LightWeightHeavyWeightCommunication.GreenFlag;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        return false;
+    }
+
     @Override
     public void run() {
 
         while(true){
-            //waitHeavyWeight();
+            while (waitHeavyWeight());
             requestCS();
             for (int i=0; i<10; i++){
                 System.out.println("I am the Process A lightweight: "+ processId + " printed times: " + (1 + i));
@@ -197,7 +241,7 @@ public class ProcessAChild extends LightweightProcess {
             }
             releaseCS();
 
-            //notifyHeavyWeight();
+            notifyHeavyWeight();
         }
     }
 }

@@ -6,6 +6,7 @@ import processes.ricardandagrawala.MessageTypeRicarAndAgrawala;
 import processes.socket.ServerHandlerLamport;
 import processes.socket.ServerHandlerRicardAndAgrawala;
 
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -24,6 +25,7 @@ public class ProcessBChild  extends Thread{
     int numberProcesses;
 
     int ownPort;
+    int ownCommunicationPort;
     int[] socketPorts;
     boolean[] okArray;
 
@@ -33,11 +35,19 @@ public class ProcessBChild  extends Thread{
     Instant ownInstant;
     Semaphore semaphore = new Semaphore(1);
 
-    public ProcessBChild(int numberProcesses, int processId, int[] socketPorts) {
+    int parentPort;
+
+    Socket parentSocket;
+
+    boolean flag;
+
+    public ProcessBChild(int numberProcesses, int processId, int[] socketPorts, int parentPort, int[] communicationPorts) {
         this.queue = new PriorityQueue<Pair<Instant, Integer>>();
         this.processId = processId;
         this.numberProcesses = numberProcesses;
         this.socketPorts = socketPorts;
+        this.parentPort = parentPort;
+        this.flag = false;
 
         clientSockets = new Socket[numberProcesses];
         okArray = new boolean[numberProcesses];
@@ -45,12 +55,24 @@ public class ProcessBChild  extends Thread{
         for (int i = 0; i < numberProcesses; i++) {
             if (i == processId) {
                 this.ownPort = socketPorts[i];
+                this.ownCommunicationPort = communicationPorts[i];
                 try {
                     serverScokets = new ServerSocket(socketPorts[i], 2 * (numberProcesses - 1) + 5);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
             }
+        }
+
+        try {
+            parentSocket = new Socket(InetAddress.getLocalHost(), parentPort);
+            DataOutputStream dataOutputStream = new DataOutputStream(parentSocket.getOutputStream());
+
+            dataOutputStream.writeInt(processId);
+            dataOutputStream.writeInt(ownCommunicationPort);
+
+        }catch (IOException exception){
+            throw new RuntimeException();
         }
 
         Arrays.fill(okArray, false);
@@ -178,12 +200,34 @@ public class ProcessBChild  extends Thread{
 
     }
 
+    private void notifyHeavyWeight() {
+        try {
+            DataOutputStream dataOutputStream = new DataOutputStream(parentSocket.getOutputStream());
+            dataOutputStream.writeUTF(LightWeightHeavyWeightCommunication.GreenFlag.toString());
+            flag = false;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private boolean waitHeavyWeight() {
+        try {
+            DataInputStream dataInputStream = new DataInputStream(parentSocket.getInputStream());
+            String result = dataInputStream.readUTF();
+
+            flag = LightWeightHeavyWeightCommunication.valueOf(result) == LightWeightHeavyWeightCommunication.GreenFlag;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        return false;
+    }
+
 
     @Override
     public void run() {
 
         while(true){
-            //waitHeavyWeight();
+            while (waitHeavyWeight());
             requestCS();
             for (int i=0; i<10; i++){
                 System.out.println("I am the Process B lightweight: "+ processId + " printed times: " + (1 + i));
@@ -194,7 +238,7 @@ public class ProcessBChild  extends Thread{
             }
             releaseCS();
 
-            //notifyHeavyWeight();
+            notifyHeavyWeight();
         }
     }
 }
